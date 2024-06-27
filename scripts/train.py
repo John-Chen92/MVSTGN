@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+os.environ['OMP_NUM_THREADS'] = '2'
 import sys
 import argparse
 import numpy as np
@@ -13,14 +14,16 @@ from torch import nn
 from torch import optim
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
-sys.path.append('../../')
-from .utils.dataset import read_data
-from .utils.model import DenseNet
-from .utils.spatial_lstm import Mvstgn
+# sys.path.append('../../')
+# sys.path.append('G:\Code\study\GNN\MVSTGN')
+from utils.dataset import read_data
+from utils.model import DenseNet
+# from utils.spatial_lstm import Mvstgn
+from utils.Mvstgn import Mvstgn
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import h5py
 import time
-from .libs.print_para import print_para
+from utils.print_para import print_para
 
 torch.manual_seed(22)
 
@@ -31,6 +34,8 @@ parse.add_argument('-height', type=int, default=100)
 parse.add_argument('-width', type=int, default=100)
 parse.add_argument('-traffic', type=str, default='sms')
 parse.add_argument('-nb_flow', type=int, default=1)
+parse.add_argument('-meta', type=int, default=1)
+parse.add_argument('-cross', type=int, default=0)
 parse.add_argument('-cluster', type=int, default=3)
 parse.add_argument('-close_size', type=int, default=3)
 parse.add_argument('-loss', type=str, default='l1', help='l1 | l2')
@@ -121,9 +126,10 @@ def train():
     best_valid_loss = 1.0
     train_loss, valid_loss = [], []
     for i in range(opt.epoch_size):
-        scheduler.step()
         train_loss.append(train_epoch('train'))
         valid_loss.append(train_epoch('valid'))
+        
+        scheduler.step()  # Move this line here to ensure it's called once per epoch
 
         if valid_loss[-1] < best_valid_loss:
             best_valid_loss = valid_loss[-1]
@@ -176,6 +182,16 @@ def predict(test_type='train'):
     ground_truth = mmn.inverse_transform(ground_truth)
     final_predict = mmn.inverse_transform(final_predict)
     return final_predict, ground_truth
+def expand_time_features(X_meta, spatial_shape):
+    # 扩展维度以匹配X的时空维度
+    X_meta_expanded = np.repeat(X_meta[:,:,np.newaxis, np.newaxis, np.newaxis], spatial_shape[0], axis=2)
+    X_meta_expanded = np.repeat(X_meta_expanded, spatial_shape[1], axis=3)
+    X_meta_expanded = np.repeat(X_meta_expanded, spatial_shape[2], axis=4)
+    return X_meta_expanded
+def combine_features(X, X_meta_expanded):
+    # 组合时间特征和原始特征
+    X_combined = np.concatenate((X, X_meta_expanded), axis=1)
+    return X_combined
 
 def train_valid_split(dataloader, test_size=0.2, shuffle=True, random_seed=0):
     length = len(dataloader)
@@ -195,10 +211,24 @@ def train_valid_split(dataloader, test_size=0.2, shuffle=True, random_seed=0):
 
 if __name__ == '__main__':
 
-    path = 'data/data_git_version.h5'
-    feature_path = 'data/crawled_feature.csv'
+    path = 'dataset/data_git_version.h5'
+    feature_path = 'dataset/crawled_feature.csv'
     X, X_meta, X_cross, y, label, mmn = read_data(path, feature_path, opt)
-
+    # 将X_meta数据添加到X中
+    print("X.shape",X.shape)
+    print("X_meta.shape",X_meta.shape)
+    
+    spatial_shape = (X.shape[2], X.shape[3], X.shape[4])
+    print("spatial_shape",spatial_shape)
+    X_meta_expanded = expand_time_features(X_meta, spatial_shape)
+    print("X_meta_expanded.shape",X_meta_expanded.shape)
+    # X_meta_expanded = np.squeeze(X_meta_expanded, axis=2)
+    X_combined = combine_features(X, X_meta_expanded)
+    print("X_combined.shape",X_combined.shape)
+    # 展示第二维的数据
+    dim2 = X_combined[0, :, 0, 0, 0]
+    print("dim2",dim2)
+    X = X_combined
     samples, sequences, channels, height, width = X.shape
 
     x_train, x_test = X[:-opt.test_size], X[-opt.test_size:] 
@@ -212,9 +242,14 @@ if __name__ == '__main__':
     prediction_ct = 0
     truth_ct = 0
     
+    # opt.model_filename = '{}/model={}-lr={}-period={}'.format(
+    #                                                     opt.save_dir,
+    #                                                     'MVSTGN_SMS',
+    #                                                     opt.lr,
+    #                                                     opt.period_size)
     opt.model_filename = '{}/model={}-lr={}-period={}'.format(
                                                         opt.save_dir,
-                                                        'MVSTGN_SMS',
+                                                        'MVSTGN_{0}'.format(opt.traffic),
                                                         opt.lr,
                                                         opt.period_size)
     print('Saving to ' + opt.model_filename)
@@ -224,7 +259,7 @@ if __name__ == '__main__':
 
     train_data = list(zip(*[x_train, y_train]))
     test_data = list(zip(*[x_test, y_test]))
-
+    print(len(train_data), len(test_data))
     train_idx, valid_idx = train_valid_split(train_data, 0.1)
     train_sampler = SubsetRandomSampler(train_idx)
     valid_sampler = SubsetRandomSampler(valid_idx)
@@ -271,7 +306,8 @@ if __name__ == '__main__':
 
     prediction_ct += pred
     truth_ct += truth
-
+    # traffic != 'internet'时，最后一个时间步的预测值为前三个时间步的平均值*2.5
+    # 新年前夜采用线性预测
     if opt.traffic != 'internet':
         prediction_ct[-24] = ((truth_ct[-25] + truth_ct[-26] + truth_ct[-27]) / 3.0) * 2.5
 
@@ -285,3 +321,15 @@ if __name__ == '__main__':
 
     print('Final R^2 Score: {:.4f}'.format(metrics.r2_score(Y, Y_hat)))
     print('Final Variance Score: {:.4f}'.format(metrics.explained_variance_score(Y, Y_hat)))
+
+    row_start, row_end = 5, 10
+    col_start, col_end = 15, 20
+    fig, axes = plt.subplots(5, 5, figsize=(18, 10))
+    for i in range(row_start, row_end):
+        for j in range(col_start, col_end):
+            axes[i - row_start, j - col_start].plot(prediction_ct[:, :, i, j], 'r-')
+            axes[i - row_start, j - col_start].plot(truth_ct[:, :, i, j], 'k-')
+
+    timestamp = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+    plt.savefig('results_data/fig_{}.png'.format(timestamp))
+    plt.show()

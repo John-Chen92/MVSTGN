@@ -7,6 +7,8 @@ import numpy as np
 from pandas import to_datetime
 import pandas as pd
 from sklearn import cluster
+import holidays
+
 
 
 class MinMaxNorm01(object):
@@ -29,14 +31,36 @@ class MinMaxNorm01(object):
     def inverse_transform(self, x):
         x = x * (self.max - self.min) + self.min
         return x
+class MinMaxNorm02(object):
+    def __init__(self):
+        pass
 
+    def fit(self, x):
+        self.min = x.min()
+        self.max = x.max()
+        #print('Min:{}, Max:{}'.format(self.min, self.max))
+
+    def transform(self, x):
+        x = 1.0 * (x - self.min) / (self.max - self.min)
+        return x
+
+    def fit_transform(self, x):
+        self.fit(x)
+        return self.transform(x)
+
+    def inverse_transform(self, x):
+        x = x * (self.max - self.min) + self.min
+        return x
 
 def get_date_feature(idx):
-    a = idx.weekday()
-    b = idx.hour
-    c = idx.weekday() // 6
-    d = idx.weekday() // 7
-    return a, b, c, d
+    # 创建意大利节假日对象
+    it_holidays = holidays.Italy(years=[2013, 2014])
+    weekday = idx.weekday()
+    hour = idx.hour
+    is_saturday = idx.weekday() // 6
+    is_sunday = idx.weekday() // 7
+    is_holiday = int(idx in it_holidays) * 5
+    return weekday, hour, is_saturday, is_sunday, is_holiday
 
 
 def traffic_loader(f, feature_path, opt):
@@ -64,7 +88,6 @@ def traffic_loader(f, feature_path, opt):
         # result_p = data_p.reshape((-1, 1, opt.height, opt.width))
         # result_t = data_t.reshape((-1, 1, opt.height, opt.width))
         # result = np.concatenate((result_o, result_p, result_t), axis=1)
-        # # print(result.shape)
 
         if opt.crop:
             result = result[:, :, opt.rows[0]:opt.rows[1], opt.cols[0]:opt.cols[1]]
@@ -124,41 +147,52 @@ def get_label_v2(data, feature, index, clusters):
     # print(labels)
     return labels
 
-
 def read_data(path, feature_path, opt):
     f = h5py.File(path, 'r')
     data, feature_data = traffic_loader(f, feature_path, opt)
-
-    index = f['idx'].value.astype(str)
+    print('data shape:', data.shape)
+    # index = f['idx'].value.astype(str)
+    index = f['idx'][:].astype(str)
     index = to_datetime(index, format='%Y-%m-%d %H:%M')
-
+    # 打印一次index的值
+    flag = True
+    if flag == False:
+        print(index)
+        flag = True
     cell_label = get_label_v2(data, feature_data, index, opt.cluster)
     mmn = MinMaxNorm01()
     data_scaled = mmn.fit_transform(data)
-
+    
+    print('data_scaled shape:', data_scaled.shape)
     X, y = [], []
     X_meta = []
 
     h, w = data.shape[2], data.shape[3]
-
+    print('len(data):', len(data))
     for i in range(opt.close_size, len(data)):
         xc_ = [data_scaled[i - c][:,:,:] for c in range(1, opt.close_size + 1)]
         # xc_.append(data_scaled[i][1:2,:,:])
         # xc_.append(data_scaled[i][2:3,:,:])
-        a, b, c, d = get_date_feature(index[i])
-        X_meta.append((a, b, c, d))
+        xc_ = np.asarray(xc_)
+        a, b, c, d, e = get_date_feature(index[i])
+        # c, d, e = get_date_feature(index[i])
+        X_meta.append((a, b, c, d, e))
+        # X_meta.append((c, d, e))
 
         if opt.close_size > 0:
             X.append(xc_)
 
         y.append(data_scaled[i][:,:,:])
-
+    print('xc_ shape:', xc_.shape)
     X = np.asarray(X)
     print("X.shape",X.shape)
     X_meta = np.asarray(X_meta)
+    mmn2 = MinMaxNorm02()
+    X_meta = mmn2.fit_transform(X_meta)
     X_cross = np.asarray(feature_data)
     X_cross = np.reshape(X_cross, (h * w, -1))
     y = np.asarray(y)
+    print('Y shape:', y.shape)
 
     X_cross = np.moveaxis(X_cross, 0, -1)
     X_crossdata = np.repeat(X_cross, X.shape[0]).reshape((-1, 4, h, w))

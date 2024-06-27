@@ -486,11 +486,11 @@ class st_att_block(nn.Module):
         HS, attn_v = self.nodeAttention(enc_input, slf_attn_mask)
         H = self.fusion(HS, HV)
         HT, attn_t = self.temporalAttention(enc_input, H, slf_attn_mask)
-        attn_t = None
+        attn_t = None 
         ret = torch.add(enc_input, HT)
         return ret, attn_s, attn_t
 
-class Spatial_block(nn.Module):
+class Spatial_block(nn.Module): # 空间块
     def __init__(self, d_model, d_inner, n_head, d_k, d_v, seq_len, dropout=0.1):
         super(Spatial_block, self).__init__()
         self.d_model = d_model
@@ -593,28 +593,29 @@ class PositionalEncoding(nn.Module):
 
 class Mvstgn(nn.Module):
     def __init__(self, input_shape, meta_shape, cross_shape, growth_rate=12, num_init_features=12, bn_size=4,
-                    drop_rate=0.2, nb_flows=1):
+                 drop_rate=0.2, nb_flows=1, fusion=False):
         super(Mvstgn, self).__init__()
         self.input_shape = input_shape
-        self.meta_shape = meta_shape
-        self.cross_shape = cross_shape 
-        self.filters = num_init_features 
-        self.channels = nb_flows
-        self.h, self.w = self.input_shape[-2], self.input_shape[-1]
-        self.inner_shape = self.input_shape[:2] + (self.filters, ) + self.input_shape[-2:]
-        self.sequence_len = self.input_shape[1]
-        self.d_model = input_shape[1]*input_shape[2] 
-        self.d_inner = 128
-        self.nheads = 6 
-        self.layers = 3
-        self.d_k = 16 
-        self.d_v = 16 
-        self.dim = self.nheads*self.d_k//2 
-        self.position_enc = PositionalEncoding(self.dim//4)
-        self.dropout = nn.Dropout(0.1)
-        self.layer_norm = nn.LayerNorm(self.dim//4, eps=1e-6)
-        ## 
-        self.transfor_shape = [self.input_shape[0], self.input_shape[1], self.d_model, self.input_shape[3], self.input_shape[4]]
+        self.meta_shape = meta_shape # 元数据形状
+        self.cross_shape = cross_shape # 交叉形状
+        self.filters = num_init_features # 过滤器
+        self.channels = nb_flows # 通道
+        self.h, self.w = self.input_shape[-2], self.input_shape[-1] # 高度和宽度
+        self.inner_shape = self.input_shape[:2] + (self.filters, ) + self.input_shape[-2:] # 输入形状
+        self.sequence_len = self.input_shape[1]     # 序列长度
+        self.d_model = input_shape[1]*input_shape[2] # 模型维度
+        self.d_inner = 128 # 内部维度
+        self.nheads = 6 # 头数
+        self.layers = 3 # 层数
+        self.d_k = 16 # k维度
+        self.d_v = 16 # v维度
+        self.dim = self.nheads*self.d_k//2 # 维度
+        self.position_enc = PositionalEncoding(self.dim//4) # 位置编码
+        self.dropout = nn.Dropout(0.1) # dropout
+        self.layer_norm = nn.LayerNorm(self.dim//4, eps=1e-6) # 归一化
+        self.fusion = fusion  # Store the fusion parameter
+        # self.maps = maps # Store the number of maps
+        self.transfor_shape = [self.input_shape[0], self.input_shape[1], self.d_model, self.input_shape[3], self.input_shape[4]] # 转换形状
 
         self.stglobal = nn.Sequential()
         stglobal = STGlobal(self.layers, self.nheads, self.d_k, self.d_v, self.dim//4*self.input_shape[1], self.d_inner, self.sequence_len)
@@ -631,6 +632,7 @@ class Mvstgn(nn.Module):
 
         self.features = nn.Sequential()
         num_features = self.dim//4
+        # num_features = self.filters*maps
         block_config = [6, 6, 6]
         for i, num_layers in enumerate(block_config):
             block = _DenseBlock(num_layers=num_layers, num_input_features=num_features,
@@ -659,7 +661,6 @@ class Mvstgn(nn.Module):
                 nn.init.kaiming_normal_(m.weight.data)
                 if m.bias is not None:
                     m.bias.data.zero_()
-
     def forward(self, x):
         batch_size, seq_len, features, num_of_cells, _ = x.shape 
         x = x.view(batch_size, seq_len, features, num_of_cells*num_of_cells).transpose(2,3)
@@ -672,5 +673,5 @@ class Mvstgn(nn.Module):
         out = out.view(batch_size, -1, num_of_cells, num_of_cells)
 
         out = self.features(out)
-        out = F.sigmoid(out) 
+        out = F.sigmoid(out)
         return out
